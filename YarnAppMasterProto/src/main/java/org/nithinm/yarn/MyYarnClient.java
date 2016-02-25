@@ -31,9 +31,10 @@ import java.util.*;
  */
 public class MyYarnClient extends Configured {
     private String appName = "MyTestApp";
+    private String storageAccount = "wasb://nithinmhdi2@nithinwasb.blob.core.windows.net/";
     private static final Log LOG = LogFactory.getLog(MyYarnClient.class);
     private Configuration conf;
-    private int amMemory = 8192;
+    private int amMemory = 2048;
     private int amVCores = 4;
 
     public void startYarnApp() {
@@ -63,7 +64,7 @@ public class MyYarnClient extends Configured {
 
             FileSystem fs = FileSystem.get(conf);
 
-            String amJarUri = "wasb://nithinhivetest@nithinhivetest.blob.core.windows.net/jars/YarnAppMasterProto-1.0-SNAPSHOT.jar";
+            String amJarUri = storageAccount + "jars/YarnAppMasterProto-1.0-SNAPSHOT.jar";
             Path jarPath = fs.makeQualified(new Path(amJarUri)); // <- known path to jar file
             FileStatus jarStatus = fs.getFileStatus(jarPath);
             LocalResource amJarRsrc = Records.newRecord(LocalResource.class);
@@ -89,7 +90,7 @@ public class MyYarnClient extends Configured {
             // need to use the symlink filename.
             localResources.put("AppMaster", amJarRsrc);
 
-            String HS2JarUri = "wasb://nithinhivetest@nithinhivetest.blob.core.windows.net/jars/hive-0.14.0.2.2.7.1-34.tar";
+            String HS2JarUri = storageAccount + "jars/hive-1.2.1.2.3.3.1-5.zip";
             Path hs2jarPath = fs.makeQualified(new Path(HS2JarUri)); // <- known path to jar file
             FileStatus hs2jarStatus = fs.getFileStatus(hs2jarPath);
             LocalResource hs2JarRsrc = Records.newRecord(LocalResource.class);
@@ -114,6 +115,58 @@ public class MyYarnClient extends Configured {
             // The ApplicationMaster, if needs to reference the jar file, would
             // need to use the symlink filename.
             localResources.put("HS2", hs2JarRsrc);
+
+            String execScript = storageAccount + "jars/startService.cmd";
+            Path scriptPath = fs.makeQualified(new Path(execScript)); // <- known path to jar file
+            FileStatus scriptStatus = fs.getFileStatus(scriptPath);
+            LocalResource scriptRsrc = Records.newRecord(LocalResource.class);
+            // Set the type of resource - file or archive
+            // archives are untarred at the destination by the framework
+            scriptRsrc.setType(LocalResourceType.FILE);
+            // Set visibility of the resource
+            // Setting to most private option i.e. this file will only
+            // be visible to this instance of the running application
+            scriptRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
+            // Set the location of resource to be copied over into the
+            // working directory
+            scriptRsrc.setResource(ConverterUtils.getYarnUrlFromPath(scriptPath));
+            // Set timestamp and length of file so that the framework
+            // can do basic sanity checks for the local resource
+            // after it has been copied over to ensure it is the same
+            // resource the client intended to use with the application
+            scriptRsrc.setTimestamp(scriptStatus.getModificationTime());
+            scriptRsrc.setSize(scriptStatus.getLen());
+            // The framework will create a symlink called AppMaster.jar in the
+            // working directory that will be linked back to the actual file.
+            // The ApplicationMaster, if needs to reference the jar file, would
+            // need to use the symlink filename.
+            localResources.put("startservice.cmd", scriptRsrc);
+
+            String hiveScript = storageAccount + "jars/hivesamplescript.q";
+            Path hivescriptPath = fs.makeQualified(new Path(hiveScript)); // <- known path to jar file
+            FileStatus hiveScriptStatus = fs.getFileStatus(hivescriptPath);
+            LocalResource hiveScriptRsrc = Records.newRecord(LocalResource.class);
+            // Set the type of resource - file or archive
+            // archives are untarred at the destination by the framework
+            hiveScriptRsrc.setType(LocalResourceType.FILE);
+            // Set visibility of the resource
+            // Setting to most private option i.e. this file will only
+            // be visible to this instance of the running application
+            hiveScriptRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
+            // Set the location of resource to be copied over into the
+            // working directory
+            hiveScriptRsrc.setResource(ConverterUtils.getYarnUrlFromPath(hivescriptPath));
+            // Set timestamp and length of file so that the framework
+            // can do basic sanity checks for the local resource
+            // after it has been copied over to ensure it is the same
+            // resource the client intended to use with the application
+            hiveScriptRsrc.setTimestamp(hiveScriptStatus.getModificationTime());
+            hiveScriptRsrc.setSize(hiveScriptStatus.getLen());
+            // The framework will create a symlink called AppMaster.jar in the
+            // working directory that will be linked back to the actual file.
+            // The ApplicationMaster, if needs to reference the jar file, would
+            // need to use the symlink filename.
+            localResources.put("script.q", hiveScriptRsrc);
 
             // Set the env variables to be setup in the env where the application master will be run
             LOG.info("Set the environment for the application master");
@@ -216,7 +269,9 @@ public class MyYarnClient extends Configured {
                 // Get application report for the appId we are interested in
                 ApplicationReport report = yarnClient.getApplicationReport(appId);
                 LOG.info("Current state: " + report.getYarnApplicationState().toString());
-                if (report.getYarnApplicationState() == YarnApplicationState.FINISHED){
+                if (report.getYarnApplicationState() == YarnApplicationState.FINISHED ||
+                        report.getYarnApplicationState() == YarnApplicationState.FAILED ||
+                        report.getYarnApplicationState() == YarnApplicationState.KILLED) {
                     break;
                 }
 

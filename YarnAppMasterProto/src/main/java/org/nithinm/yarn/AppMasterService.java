@@ -78,7 +78,7 @@ public class AppMasterService extends Configured {
 
     private void runProcess() {
         try {
-            String command = "cmd /C dir > c:\\out.txt";
+            String command = "cmd /C startservice.cmd > log.txt";
             Process myProcess = Runtime.getRuntime().exec(command);
             LOG.info("Process successfully started");
         }
