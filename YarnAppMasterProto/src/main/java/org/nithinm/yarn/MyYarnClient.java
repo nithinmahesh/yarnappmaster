@@ -116,7 +116,7 @@ public class MyYarnClient extends Configured {
             // need to use the symlink filename.
             localResources.put("HS2", hs2JarRsrc);
 
-            String execScript = storageAccount + "jars/startService.cmd";
+            String execScript = storageAccount + "jars/hive-site.xml";
             Path scriptPath = fs.makeQualified(new Path(execScript)); // <- known path to jar file
             FileStatus scriptStatus = fs.getFileStatus(scriptPath);
             LocalResource scriptRsrc = Records.newRecord(LocalResource.class);
@@ -140,7 +140,7 @@ public class MyYarnClient extends Configured {
             // working directory that will be linked back to the actual file.
             // The ApplicationMaster, if needs to reference the jar file, would
             // need to use the symlink filename.
-            localResources.put("startservice.cmd", scriptRsrc);
+            localResources.put("hive-site.xml", scriptRsrc);
 
             String hiveScript = storageAccount + "jars/hivesamplescript.q";
             Path hivescriptPath = fs.makeQualified(new Path(hiveScript)); // <- known path to jar file

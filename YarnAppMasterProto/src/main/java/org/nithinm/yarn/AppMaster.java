@@ -11,7 +11,7 @@ public class AppMaster {
     public static void main(String[] args) {
         AppMasterService service = new AppMasterService();
         service.start();
-        // ThreadUtil.sleepAtLeastIgnoreInterrupts(processRuntimeMinutes * 1000 * 60);
-        // service.shutdown();
+        service.waitForCompletion();
+        service.shutdown();
     }
 }
