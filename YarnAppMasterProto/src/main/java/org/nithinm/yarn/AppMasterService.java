@@ -15,6 +15,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import static java.nio.file.StandardOpenOption.*;
+
 import java.nio.file.*;
 import java.io.*;
 
@@ -26,53 +27,78 @@ import java.util.Map;
 
 /**
  * Created by nithinm on 2/18/2016.
+ * Class that implements all functions of a Yarn Application Master
  */
 public class AppMasterService extends Configured {
-    private static final Log LOG = LogFactory.getLog(AppMaster.class);
+    private static final Log LOG = LogFactory.getLog(AppMasterService.class);
+    private static String HadoopHome = "HADOOP_HOME";
+    private static int AMHeartbeatIntervalMs = 1000;
     private ApplicationAttemptId appAttemptID;
     private Configuration conf;
     private ContainerId containerId;
     private AMRMClientAsync amRmClient;
     String trackingUrl;
-    private String port = "2000";
-    // private String hivelocation = "hive-1.2.1.0.0.0.0-0separateMetastore";
-    private String hivelocation = "hive-1.2.1.2.3.3.1-5";
+    private String metastorePort = "";
     private Process beelineProcess;
     private Process hs2Process;
     private Process metastoreProcess;
+    private String logDir;
+    private String workingDir;
+    private String service;
+    private WebApp webApp;
 
-    public AppMasterService()
+    public AppMasterService(String serviceName, int minport, int maxport)
     {
-        conf = getConf();
+        conf = new Configuration();
+        beelineProcess = null;
+        hs2Process = null;
+        metastoreProcess = null;
+        trackingUrl = null;
+        service = serviceName.toLowerCase();
+        int midport = (minport + maxport) / 2;
+        webApp = new WebApp(minport, midport, this);
+
+        if (service.equalsIgnoreCase(Service.METASTORE.toString())) {
+            int availablePort = PortAvailabilityDetector.getAvailablePortInRange(midport + 1, maxport);
+            if (availablePort != 0) {
+                metastorePort = String.valueOf(availablePort);
+            }
+        }
     }
 
-    private enum Service {
+    public enum Service {
         METASTORE,
         HIVESERVER2,
         BEELINE
     }
 
-
-    private void getAttemptId() {
+    private void setupApplicationVariables() {
         Map<String, String> envs = System.getenv();
-        String containerIdString =
-                envs.get(ApplicationConstants.Environment.CONTAINER_ID.toString());
+        String containerIdString = envs.get(
+                ApplicationConstants.Environment.CONTAINER_ID.toString());
         if (containerIdString == null) {
             // container id should always be set in the env by the framework
             throw new IllegalArgumentException(
                     "ContainerId not set in the environment");
         }
+
         containerId = ConverterUtils.toContainerId(containerIdString);
-        LOG.info("ContainerId = " + containerId);
         appAttemptID = containerId.getApplicationAttemptId();
+        logDir = System.getenv(ApplicationConstants.Environment.LOG_DIRS.toString());
+        workingDir = System.getenv(ApplicationConstants.Environment.PWD.toString());
+
+        LOG.info("ContainerId = " + containerId);
         LOG.info("ApplicationAttemptId = " + appAttemptID);
+        LOG.info("LogDir = " + logDir);
+        LOG.info("WorkingDir = " + workingDir);
     }
 
     private boolean registerAM() {
-        amRmClient = AMRMClientAsync.createAMRMClientAsync(1000, new YarnAppCallbackHandler());
-        conf = new Configuration();
+        amRmClient = AMRMClientAsync.createAMRMClientAsync(
+                AMHeartbeatIntervalMs, new YarnAppCallbackHandler());
         amRmClient.init(conf);
         amRmClient.start();
+        webApp.startServer();
 
         String hostname = "";
         try {
@@ -81,10 +107,11 @@ public class AppMasterService extends Configured {
             e.printStackTrace();
         }
 
-        trackingUrl = "someTrackingUrl";
+        trackingUrl = webApp.getServerUrl();
 
         try {
-            RegisterApplicationMasterResponse response = amRmClient.registerApplicationMaster(hostname, 8888, trackingUrl);
+            RegisterApplicationMasterResponse response =
+                    amRmClient.registerApplicationMaster(hostname, -1, trackingUrl);
             LOG.info("Register AM, response : " + response.toString());
         }
         catch (Exception e) {
@@ -109,16 +136,35 @@ public class AppMasterService extends Configured {
         }
     }
 
-    private void generateStartScript(Service service) {
-        String[] whitelist = conf.get(YarnConfiguration.NM_ENV_WHITELIST, YarnConfiguration.DEFAULT_NM_ENV_WHITELIST).split(",");
-
+    private Map<String, String> setSystemEnvVariables() {
         Map<String, String> environment = new HashMap<String, String>();
+
+        String[] whitelist = conf.get(
+                YarnConfiguration.NM_ENV_WHITELIST,
+                YarnConfiguration.DEFAULT_NM_ENV_WHITELIST).split(",");
 
         for (String whitelistEnvVariable : whitelist) {
             putEnvIfAbsent(environment, whitelistEnvVariable.trim());
         }
 
-        environment.put("HADOOP_HOME", "%" + ApplicationConstants.Environment.HADOOP_COMMON_HOME + "%");
+        // Hive needs HADOOP_HOME to be set
+        //
+        if (System.getenv(HadoopHome) == null) {
+            environment.put(HadoopHome,System.getenv(
+                    ApplicationConstants.Environment.HADOOP_COMMON_HOME.toString()));
+        }
+
+        return environment;
+    }
+
+    private String generateStartScript(Service service) {
+        Map<String, String> environment = setSystemEnvVariables();
+
+        // Setup other Hive variables
+        //
+        environment.put("HIVE_OPTS",
+                " -hiveconf hive.querylog.location=" + logDir
+                        + " -hiveconf hive.log.dir=" + logDir);
 
         // Create a script start<servicename>.cmd that sets JAVA_HOME and HADOOP_HOME and
         // starts all the services - metastore, HS2 and then beeline
@@ -127,30 +173,33 @@ public class AppMasterService extends Configured {
         for (Map.Entry<String, String> env : environment.entrySet()) {
             fileContent += "set " + env.getKey() + "=" + env.getValue() + "\r\n";
         }
-        fileContent += "cd HS2\\" + hivelocation + "\\conf\r\n";
 
+        fileContent += "cd HS2\r\n";
+        fileContent += "cd hive*\r\n";
+        fileContent += "cd conf\r\n";
         fileContent += "rename hive-site.xml hive-siteTemplate.xml\r\n";
-
-        fileContent += "copy ..\\..\\..\\hive-site.xml hive-site.xml\r\n";
-
+        fileContent += "copy /Y ..\\..\\..\\hive-site.xml hive-site.xml\r\n";
         fileContent += "cd ..\\bin\r\n";
 
         if (service == Service.BEELINE) {
             fileContent += service.toString().toLowerCase() +
                     " -u jdbc:hive2://localhost:10001/;transportMode=http;hive.server2.servermode=http " +
                     "-n tester -p password " + "" +
-                    "-f ../../../script.q > ../../../beelineoutput.txt";
+                    "-f ../../../script.q > "
+                    + logDir
+                    + "/beelineoutput.txt";
         } else {
             fileContent += "hive --service " + service.toString().toLowerCase();
             if (service == Service.METASTORE) {
-                fileContent += " -p " + port;
+                fileContent += " -p " + metastorePort;
             }
         }
 
         fileContent += "\r\n";
 
         byte data[] = fileContent.getBytes();
-        Path p = Paths.get("./start" + service.toString().toLowerCase() + ".cmd");
+        String scriptName = "start" + service.toString().toLowerCase() + ".cmd";
+        Path p = Paths.get("./"+ scriptName);
 
         try {
             OutputStream out = new BufferedOutputStream(Files.newOutputStream(p, CREATE, APPEND));
@@ -161,51 +210,48 @@ public class AppMasterService extends Configured {
             System.err.println(x);
         }
 
+        return scriptName;
     }
 
-    private void copyOutput() {
-        /*
-                            "FOR /F %%a IN ('POWERSHELL -COMMAND \"$([guid]::NewGuid().ToString())\"') DO ( SET NEWGUID=%%a )\r\n" +
-                            "hadoop fs -mkdir adl://nithinadls.caboaccountdogfood.net/output\r\n" +
-                            "hadoop fs -mkdir adl://nithinadls.caboaccountdogfood.net/output/%NEWGUID%\r\n" +
-                            "hadoop fs -copyFromLocal -f beelineoutput.txt adl://nithinadls.caboaccountdogfood.net/output/%NEWGUID%\r\n" +
-                            "hadoop fs -copyFromLocal -f log.txt adl://nithinadls.caboaccountdogfood.net/output/%NEWGUID%";
-*/
+    private Process startProcess(String scriptName) throws IOException {
+        String command = "cmd /C " + scriptName +
+                " > " + logDir + "/" + scriptName + "log.txt";
+        return Runtime.getRuntime().exec(command);
     }
 
-    private void runProcess() {
+    // Do the actual work to start application master logic
+    //
+    private void doStartupWork() {
         try {
-            Service service = Service.METASTORE;
-            generateStartScript(service);
-            String metastoreCommand = "cmd /C start" + service.toString().toLowerCase() + ".cmd" +
-                    " > C:/start" + service.toString().toLowerCase() + "log.txt";
-            metastoreProcess = Runtime.getRuntime().exec(metastoreCommand);
-            LOG.info("Metastore Process successfully started in port " + port + "\n");
-            ThreadUtil.sleepAtLeastIgnoreInterrupts(60000);
+            if (service.equalsIgnoreCase(Service.METASTORE.toString())) {
+                if (metastorePort == "") {
+                    throw new Exception("No ports available in the given range.");
+                }
 
-            service = Service.HIVESERVER2;
-            generateStartScript(service);
-            String hs2Command = "cmd /C start" + service.toString().toLowerCase() + ".cmd" +
-                    " > C:/start" + service.toString().toLowerCase() + "log.txt";
-            hs2Process = Runtime.getRuntime().exec(hs2Command);
-            LOG.info("Hiveserver2 Process successfully started in port 10001\n");
-            ThreadUtil.sleepAtLeastIgnoreInterrupts(120000);
+                metastoreProcess = startProcess(generateStartScript(Service.METASTORE));
+                LOG.info("Metastore Process " + metastoreProcess.toString() +
+                        " successfully started in port " + metastorePort + "\n");
+            } else {
+                hs2Process = startProcess(generateStartScript(Service.HIVESERVER2));
+                LOG.info("Hiveserver2 Process " + hs2Process.toString() +
+                        " successfully started in port 10001\n");
+                ThreadUtil.sleepAtLeastIgnoreInterrupts(120000);
 
-            service = Service.BEELINE;
-            generateStartScript(service);
-            String beelineCommand = "cmd /C start" + service.toString().toLowerCase() + ".cmd" +
-                    " > C:/start" + service.toString().toLowerCase() + "log.txt";
-            beelineProcess = Runtime.getRuntime().exec(beelineCommand);
-            LOG.info("Beeline Process successfully started.\n");
+                beelineProcess = startProcess(generateStartScript(Service.BEELINE));
+                LOG.info("Beeline Process " + beelineProcess.toString() +
+                        " successfully started.\n");
+            }
         }
         catch (Exception e) {
             e.printStackTrace();
+            shutdown();
         }
     }
 
     private void finishAM() {
+        webApp.stopServer();
         FinalApplicationStatus status = FinalApplicationStatus.SUCCEEDED;
-        String appMsg = "I'm done";
+        String appMsg = "AppService completed successfully";
         try {
             amRmClient.unregisterApplicationMaster(status, appMsg, trackingUrl);
             LOG.info("AppService finished");
@@ -218,25 +264,48 @@ public class AppMasterService extends Configured {
     }
 
     public void start() {
-        getAttemptId();
+        setupApplicationVariables();
         registerAM();
-        runProcess();
+        doStartupWork();
     }
 
     public void waitForCompletion() {
         try {
-            beelineProcess.waitFor();
+            // If not a beeline process, shutdown will be called from the higher layer
+            //
+            if (beelineProcess != null) {
+                beelineProcess.waitFor();
+                shutdown();
+            }
         } catch (Exception e) {
             e.printStackTrace();
+            shutdown();
         }
-
-        copyOutput();
-
-        // hs2Process.destroyForcibly();
-        // metastoreProcess.destroyForcibly();
     }
 
     public void shutdown() {
+        if (hs2Process != null) {
+            hs2Process.destroy();
+        }
+        if (metastoreProcess != null) {
+            metastoreProcess.destroy();
+        }
+
         finishAM();
+    }
+
+    public String getMetastoreUrl() {
+        if (service.equalsIgnoreCase(Service.METASTORE.toString())) {
+            String hostname = "";
+            try {
+                hostname = InetAddress.getLocalHost().getHostName();
+            } catch (UnknownHostException e) {
+                e.printStackTrace();
+            }
+
+            return "thrift://" + hostname + ":" + metastorePort;
+        }
+
+        return "";
     }
 }

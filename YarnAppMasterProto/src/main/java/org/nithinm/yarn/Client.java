@@ -2,7 +2,6 @@ package org.nithinm.yarn;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.nithinm.yarn.MyYarnClient;
 
 /**
  * Created by nithinm on 2/18/2016.
@@ -13,7 +12,7 @@ public class Client {
         LOG.info("Starting client.");
         MyYarnClient yarnClient = new MyYarnClient();
         LOG.info("Starting yarn app.");
-        yarnClient.startYarnApp();
+        yarnClient.startJob();
         LOG.info("Done");
     }
 }
