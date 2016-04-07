@@ -21,7 +21,7 @@ public class TestWebApp {
 
     @Before
     public void setUp() throws Exception {
-        appMasterService = new AppMasterService(AppMasterService.Service.BEELINE.toString(),  1, 16000);
+        appMasterService = new AppMasterService(AppMasterService.Service.METASTORE.toString(),  1, 16000);
         webApp = new WebApp(1, 16000, appMasterService);
         boolean result = webApp.startServer();
         assertEquals("Failed to start http server", true, result);

@@ -72,7 +72,7 @@ public class AppMasterService extends Configured {
         BEELINE
     }
 
-    private void setupApplicationVariables() {
+    private boolean setupApplicationVariables() throws IllegalArgumentException{
         Map<String, String> envs = System.getenv();
         String containerIdString = envs.get(
                 ApplicationConstants.Environment.CONTAINER_ID.toString());
@@ -91,6 +91,8 @@ public class AppMasterService extends Configured {
         LOG.info("ApplicationAttemptId = " + appAttemptID);
         LOG.info("LogDir = " + logDir);
         LOG.info("WorkingDir = " + workingDir);
+
+        return true;
     }
 
     private boolean registerAM() {
@@ -221,7 +223,7 @@ public class AppMasterService extends Configured {
 
     // Do the actual work to start application master logic
     //
-    private void doStartupWork() {
+    private boolean doStartupWork() {
         try {
             if (service.equalsIgnoreCase(Service.METASTORE.toString())) {
                 if (metastorePort == "") {
@@ -245,28 +247,38 @@ public class AppMasterService extends Configured {
         catch (Exception e) {
             e.printStackTrace();
             shutdown();
+            return  false;
         }
+
+        return true;
     }
 
-    private void finishAM() {
+    private boolean finishAM() {
+        boolean result = false;
         webApp.stopServer();
         FinalApplicationStatus status = FinalApplicationStatus.SUCCEEDED;
         String appMsg = "AppService completed successfully";
         try {
             amRmClient.unregisterApplicationMaster(status, appMsg, trackingUrl);
             LOG.info("AppService finished");
+            result = true;
         }
         catch (Exception e) {
             LOG.info ("UnRegisterAM hit exception: " + e.getStackTrace());
         }
 
         amRmClient.stop();
+
+        return result;
     }
 
-    public void start() {
-        setupApplicationVariables();
-        registerAM();
-        doStartupWork();
+    public boolean start() {
+        boolean result = true;
+        result &= setupApplicationVariables();
+        result &= registerAM();
+        result &= doStartupWork();
+
+        return result;
     }
 
     public void waitForCompletion() {
@@ -283,7 +295,7 @@ public class AppMasterService extends Configured {
         }
     }
 
-    public void shutdown() {
+    public boolean shutdown() {
         if (hs2Process != null) {
             hs2Process.destroy();
         }
@@ -291,7 +303,7 @@ public class AppMasterService extends Configured {
             metastoreProcess.destroy();
         }
 
-        finishAM();
+        return finishAM();
     }
 
     public String getMetastoreUrl() {

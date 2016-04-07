@@ -18,7 +18,7 @@ public class TestPortAvailabilityDetector {
     private static final Log LOG = LogFactory.getLog(TestPortAvailabilityDetector.class);
 
     @Test
-    public void testPortAvailability()
+    public void testPortAvailabilityPositiveTest()
     {
         int startport  = 1, endport = 16000;
 
@@ -49,6 +49,36 @@ public class TestPortAvailabilityDetector {
         }
 
         assertTrue("Bad port identified", availablePort >= outputPort);
+    }
+    @Test
+    public void testPortAvailabilityNegativeTest()
+    {
+        int startport  = 1, endport = 10;
+
+        ServerSocket[] ss = new ServerSocket[endport];
+        for (int i = 0; i <= endport; i++) {
+            try {
+                ss[i] = new ServerSocket(i + 1);
+                ss[i].setReuseAddress(true);
+            }
+            catch (Exception e) {}
+        }
+
+        int availablePort = PortAvailabilityDetector.getAvailablePortInRange(startport, endport);
+
+        for (int i = 0; i < endport; i++) {
+            try {
+                if (ss[i] != null) {
+                    ss[i].close();
+                }
+            } catch (IOException e) {
+                /* should not be thrown
+                * Need to be handled */
+                LOG.warn("ServerSocket close threw an exception:" + e.getMessage());
+            }
+        }
+
+        assertTrue("Bad port identified", availablePort == 0);
     }
 
 }
